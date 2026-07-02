@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hi-Flow 실시간 운영 대시보드</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>
+  :root {
+    --page:      #f9f9f7;
+    --surface:   #fcfcfb;
+    --ink:       #0b0b0b;
+    --ink-2:     #52514e;
+    --muted:     #898781;
+    --grid:      #e1e0d9;
+    --border:    rgba(11,11,11,0.10);
+    --series-1:  #2a78d6;   /* 파랑: 주 시리즈/게이지 */
+    --trail:     #86b6ef;   /* 순차 램프 250: 이동 궤적 */
+    --st-good:     #0ca30c;
+    --st-warning:  #fab219;
+    --st-critical: #d03b3b;
+    --state-moving: #1baf7a;
+    --state-measuring: #2a78d6;
+    --state-retrieving: #4a3aa7;
+    --state-done: #008300;
+    --state-stabilizing: #eda100;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page:    #0d0d0d;
+      --surface: #1a1a19;
+      --ink:     #ffffff;
+      --ink-2:   #c3c2b7;
+      --muted:   #898781;
+      --grid:    #2c2c2a;
+      --border:  rgba(255,255,255,0.10);
+      --series-1: #3987e5;
+      --trail:    #1c5cab;
+      --state-moving: #199e70;
+      --state-measuring: #3987e5;
+      --state-retrieving: #9085e9;
+      --state-stabilizing: #c98500;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--page); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+    padding: 20px; max-width: 1200px; margin: 0 auto;
+  }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+  header h1 { font-size: 20px; }
+  header .clock { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  header .offline { display: none; color: var(--st-critical); font-weight: 600; }
+  header .offline.show { display: inline; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .card h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; letter-spacing: .02em; }
+  .big { font-size: 28px; font-weight: 700; line-height: 1.15; }
+  .big .unit { font-size: 14px; font-weight: 400; color: var(--ink-2); margin-left: 3px; }
+  .sub { font-size: 12px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .badge .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .bar { height: 8px; border-radius: 4px; background: var(--grid); margin-top: 10px; overflow: hidden; }
+  .bar > div { height: 100%; border-radius: 4px; background: var(--series-1); transition: width .5s; }
+  /* 수심 게이지 */
+  .depth-wrap { display: flex; gap: 14px; align-items: stretch; }
+  .gauge { width: 14px; height: 84px; border: 1px solid var(--border); border-radius: 7px; background: var(--grid); overflow: hidden; }
+  .gauge > div { width: 100%; background: var(--series-1); height: 0%; transition: height .5s; }
+  /* GPS 지도 */
+  .map-card { grid-column: span 2; }
+  .gps-row { display: flex; gap: 16px; align-items: flex-start; }
+  .gps-nums { font-variant-numeric: tabular-nums; }
+  svg.map { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); flex: none; }
+  /* 센서 카드 */
+  .sensor-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .sensor-head h2 { margin: 0; }
+  svg.spark { display: block; margin-top: 10px; width: 100%; height: 36px; }
+  /* 실시간 3D 히트맵 */
+  .heatmap-card { grid-column: 1 / -1; }
+  .heatmap-card select {
+    background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 13px;
+  }
+  #hm-plot { height: 460px; }
+  #hm-empty { color: var(--muted); font-size: 13px; padding: 40px 0; text-align: center; }
+  @media (max-width: 560px) { .map-card { grid-column: span 1; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hi-Flow 실시간 운영 대시보드</h1>
+  <span class="clock" id="clock">--:--:--</span>
+  <span class="offline" id="offline">⚠ 서버 연결 끊김 — 재연결 시도 중</span>
+</header>
+
+<div class="tiles" id="tiles">
+  <div class="card">
+    <h2>플랫폼 상태</h2>
+    <div class="big" id="state-label">—</div>
+    <div class="badge" style="margin-top:8px"><span class="dot" id="state-dot"></span><span id="state-sub">대기</span></div>
+  </div>
+
+  <div class="card">
+    <h2>배터리 상태</h2>
+    <div class="big"><span id="battery">—</span><span class="unit">%</span></div>
+    <div class="badge" style="margin-top:6px"><span class="dot" id="battery-dot"></span><span id="battery-status">—</span></div>
+    <div class="bar"><div id="battery-bar"></div></div>
+  </div>
+
+  <div class="card">
+    <h2>현재 측정 깊이</h2>
+    <div class="depth-wrap">
+      <div class="gauge"><div id="depth-fill"></div></div>
+      <div>
+        <div class="big"><span id="depth">—</span><span class="unit">m</span></div>
+        <div class="sub">최대 <span id="max-depth">—</span> m · 0.5 m 간격 측정</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>측정 완료 여부</h2>
+    <div class="badge" style="font-size:15px"><span class="dot" id="done-dot"></span><span id="done-label">—</span></div>
+    <div class="sub" style="margin-top:8px">완료 지점 <b id="completed">0</b> / <span id="total">0</span> · 현재 <span id="point-idx">-</span>번 지점</div>
+    <div class="bar"><div id="progress-bar"></div></div>
+  </div>
+
+  <div class="card">
+    <h2>측정 시간</h2>
+    <div class="big" id="last-sample" style="font-size:24px">—</div>
+    <div class="sub">최근 측정값 수신 시각</div>
+    <div class="sub">가동 시간 <span id="uptime">—</span></div>
+  </div>
+
+  <div class="card map-card">
+    <h2>GPS 위치</h2>
+    <div class="gps-row">
+      <svg class="map" id="map" width="180" height="180" viewBox="-4 -4 108 108" role="img" aria-label="측정 수역 내 플랫폼 위치와 이동 궤적">
+        <rect x="0" y="0" width="100" height="100" fill="none" stroke="var(--grid)"></rect>
+        <polyline id="trail" fill="none" stroke="var(--trail)" stroke-width="1.5" points=""></polyline>
+        <circle id="target-pt" r="3.5" fill="none" stroke="var(--muted)" stroke-width="1" cx="-10" cy="-10"></circle>
+        <circle id="pos-pt" r="3" fill="var(--series-1)" stroke="var(--surface)" stroke-width="1.5" cx="-10" cy="-10"></circle>
+      </svg>
+      <div class="gps-nums">
+        <div class="big" style="font-size:20px">위도 <span id="lat">—</span></div>
+        <div class="big" style="font-size:20px">경도 <span id="lon">—</span></div>
+        <div class="sub">수역 내 좌표 X <span id="xm">—</span> m · Y <span id="ym">—</span> m</div>
+        <div class="sub">○ 표시 = 다음 측정 지점 · 실선 = 이동 궤적</div>
+      </div>
+    </div>
+  </div>
+  <!-- 센서 카드는 /api/telemetry 의 sensors 배열로부터 자동 생성되어 이 카드 앞에 삽입된다 -->
+
+  <div class="card heatmap-card" id="hm-card">
+    <div class="sensor-head">
+      <h2>실시간 3D 히트맵 — 누적 측정 데이터</h2>
+      <span>
+        <label class="sub">보기 형태
+          <select id="hm-view" aria-label="히트맵 보기 형태 선택">
+            <option value="bars">막대 (지점별 평균)</option>
+            <option value="cells">셀 (수심별 상세)</option>
+          </select>
+        </label>
+        <label class="sub" style="margin-left:10px">표시 항목
+          <select id="hm-sensor" aria-label="히트맵 표시 센서 선택"></select>
+        </label>
+      </span>
+    </div>
+    <div class="sub" style="margin-top:0">
+      측정이 누적될수록 셀이 채워진다 · 격자 셀 <span id="hm-count">0</span>개
+      · 마우스 드래그로 회전, 셀에 올리면 상세값 표시
+    </div>
+    <div id="hm-empty">아직 측정된 셀이 없습니다 — 첫 측정 지점 도착 후 채워집니다.</div>
+    <div id="hm-plot" hidden></div>
+  </div>
+</div>
+
+<script>
+const POLL_MS = 1000;
+const HISTORY_MAX = 90;   // 스파크라인 표본 수
+const TRAIL_MAX = 400;
+
+const stateColors = {
+  moving: "var(--state-moving)", stabilizing: "var(--state-stabilizing)",
+  measuring: "var(--state-measuring)", retrieving: "var(--state-retrieving)",
+  done: "var(--state-done)",
+};
+const sensorHistory = {};   // id → 값 배열
+const sensorCards = {};     // id → DOM 참조
+const trail = [];
+
+const $ = (id) => document.getElementById(id);
+const timePart = (iso) => (iso ? iso.split("T")[1] : "—");
+
+function fmtDuration(ms) {
+  const s = Math.floor(ms / 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(Math.floor(s / 3600))}:${p(Math.floor((s % 3600) / 60))}:${p(s % 60)}`;
+}
+
+function batteryStatus(pct) {
+  if (pct >= 50) return { label: "정상", color: "var(--st-good)", icon: "" };
+  if (pct >= 20) return { label: "주의 — 충전 준비", color: "var(--st-warning)", icon: "⚠ " };
+  return { label: "위험 — 즉시 복귀 필요", color: "var(--st-critical)", icon: "⚠ " };
+}
+
+// ── 센서 카드: sensors 배열 기반 동적 생성 (새 센서 자동 반영) ──────
+function ensureSensorCard(s) {
+  if (sensorCards[s.id]) return sensorCards[s.id];
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `
+    <div class="sensor-head">
+      <h2>센서 · ${s.name}</h2>
+      <span class="badge"><span class="dot"></span><span class="conn">—</span></span>
+    </div>
+    <div class="big"><span class="val">—</span><span class="unit">${s.unit}</span></div>
+    <svg class="spark" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true">
+      <polyline fill="none" stroke="var(--series-1)" stroke-width="1.6" points=""></polyline>
+    </svg>`;
+  $("tiles").insertBefore(card, $("hm-card"));
+  sensorHistory[s.id] = [];
+  sensorCards[s.id] = {
+    val: card.querySelector(".val"),
+    dot: card.querySelector(".dot"),
+    conn: card.querySelector(".conn"),
+    line: card.querySelector("polyline"),
+  };
+  return sensorCards[s.id];
+}
+
+function renderSensor(s) {
+  const c = ensureSensorCard(s);
+  if (s.connected) {
+    c.val.textContent = s.value !== null ? s.value : "—";
+    c.dot.style.background = "var(--st-good)";
+    c.conn.textContent = "연결됨";
+    if (s.value !== null) {
+      const h = sensorHistory[s.id];
+      h.push(s.value);
+      if (h.length > HISTORY_MAX) h.shift();
+      const min = Math.min(...h), max = Math.max(...h), span = max - min || 1;
+      c.line.setAttribute("points", h.map((v, i) =>
+        `${(i / (HISTORY_MAX - 1)) * 120},${33 - ((v - min) / span) * 30}`).join(" "));
+    }
+  } else {
+    c.val.textContent = "—";
+    c.dot.style.background = "var(--st-critical)";
+    c.conn.textContent = "⚠ 끊김";
+  }
+}
+
+function render(t) {
+  if (!t.timestamp) return;
+  $("clock").textContent = timePart(t.timestamp);
+
+  // 플랫폼 상태
+  $("state-label").textContent = t.platform_status.label;
+  $("state-dot").style.background = stateColors[t.platform_status.id] || "var(--muted)";
+  $("state-sub").textContent = `${t.mission.point_index}번 지점 작업 중`;
+
+  // 배터리
+  const b = batteryStatus(t.battery_pct);
+  $("battery").textContent = t.battery_pct;
+  $("battery-dot").style.background = b.color;
+  $("battery-status").textContent = b.icon + b.label;
+  $("battery-bar").style.width = t.battery_pct + "%";
+  $("battery-bar").style.background = b.color;
+
+  // 수심
+  $("depth").textContent = t.depth_m.toFixed(1);
+  $("max-depth").textContent = t.max_depth_m.toFixed(1);
+  $("depth-fill").style.height = (t.depth_m / t.max_depth_m) * 100 + "%";
+
+  // 측정 완료 여부 / 진행률
+  const done = t.mission.point_done;
+  $("done-dot").style.background = done ? "var(--st-good)" : "var(--muted)";
+  $("done-label").textContent = done ? "✓ 현재 지점 측정 완료" : "현재 지점 측정 전·진행 중";
+  $("completed").textContent = t.mission.completed_points;
+  $("total").textContent = t.mission.total_points;
+  $("point-idx").textContent = t.mission.point_index;
+  $("progress-bar").style.width = (t.mission.completed_points / t.mission.total_points) * 100 + "%";
+
+  // 측정 시간
+  $("last-sample").textContent = timePart(t.measurement_time.last_sample) || "—";
+  $("uptime").textContent = fmtDuration(Date.now() - new Date(t.measurement_time.mission_started));
+
+  // GPS + 궤적 (SVG 는 y 축이 아래 방향이므로 북쪽이 위로 오게 반전)
+  $("lat").textContent = t.gps.lat.toFixed(6);
+  $("lon").textContent = t.gps.lon.toFixed(6);
+  $("xm").textContent = t.gps.x_m;
+  $("ym").textContent = t.gps.y_m;
+  const sx = (v) => (v / t.area_size_m) * 100;
+  trail.push(`${sx(t.gps.x_m)},${100 - sx(t.gps.y_m)}`);
+  if (trail.length > TRAIL_MAX) trail.shift();
+  $("trail").setAttribute("points", trail.join(" "));
+  $("pos-pt").setAttribute("cx", sx(t.gps.x_m));
+  $("pos-pt").setAttribute("cy", 100 - sx(t.gps.y_m));
+  $("target-pt").setAttribute("cx", sx(t.target.x_m));
+  $("target-pt").setAttribute("cy", 100 - sx(t.target.y_m));
+
+  // 센서 (동적)
+  t.sensors.forEach(renderSensor);
+
+  // 히트맵 센서 선택 목록 (최초 1회 구성 — 새 센서 자동 반영)
+  const sel = $("hm-sensor");
+  if (sel.options.length !== t.sensors.length) {
+    sel.innerHTML = t.sensors.map((s) => `<option value="${s.id}">${s.name}</option>`).join("");
+    if (!hmSensor) hmSensor = t.sensors[0].id;
+    sel.value = hmSensor;
+  }
+}
+
+// ── 실시간 3D 히트맵 ────────────────────────────────────────────
+// 색상: 단일 파랑 순차 램프 (밝음 = 낮음 → 어두움 = 높음)
+const BLUE_RAMP = ["#cde2fb","#b7d3f6","#9ec5f4","#86b6ef","#6da7ec","#5598e7",
+                   "#3987e5","#2a78d6","#256abf","#1c5cab","#184f95","#104281","#0d366b"];
+const COLORSCALE = BLUE_RAMP.map((c, i) => [i / (BLUE_RAMP.length - 1), c]);
+const HM_DARK = matchMedia("(prefers-color-scheme: dark)").matches;
+const HM_INK = { surface: HM_DARK ? "#1a1a19" : "#fcfcfb", ink2: HM_DARK ? "#c3c2b7" : "#52514e",
+                 muted: "#898781", grid: HM_DARK ? "#2c2c2a" : "#e1e0d9" };
+const HM_POLL_MS = 2000;
+let hmSensor = null;
+let hmView = "bars";   // 기본: 프로토타입 예시와 같은 3D 막대그래프
+
+function hmColorbar(title) {
+  return {
+    title: { text: title, font: { color: HM_INK.ink2, size: 12 } },
+    tickfont: { color: HM_INK.muted, size: 11 }, thickness: 12, len: 0.6,
+  };
+}
+
+function hmAxis(text, range) {
+  return {
+    gridcolor: HM_INK.grid, zerolinecolor: HM_INK.grid, backgroundcolor: HM_INK.surface,
+    title: { text, font: { color: HM_INK.ink2, size: 12 } },
+    tickfont: { color: HM_INK.muted, size: 10 }, range,
+  };
+}
+
+function renderHeatmap(data) {
+  const cells = data.cells;
+  $("hm-count").textContent = cells.length;
+  if (!cells.length) return;
+  $("hm-empty").hidden = true;
+  $("hm-plot").hidden = false;
+  if (hmView === "bars") renderBars(data);
+  else renderCells(data);
+}
+
+// ── 막대 뷰: (X, Y) 지점별 수심 평균을 높이로 — 프로토타입 예시 스타일 ──
+function renderBars(data) {
+  const byXY = new Map();
+  data.cells.forEach(([x, y, , v, n]) => {
+    const key = `${x},${y}`;
+    const a = byXY.get(key) || { x, y, sum: 0, depths: 0, samples: 0 };
+    a.sum += v; a.depths += 1; a.samples += n;
+    byXY.set(key, a);
+  });
+  const bars = [...byXY.values()].map((a) => ({ ...a, v: a.sum / a.depths }));
+  const vals = bars.map((b) => b.v);
+  const vmin = Math.min(...vals), vmax = Math.max(...vals);
+
+  // Plotly 에는 3D 막대가 없어 지점마다 직육면체를 Mesh3d 로 만든다.
+  const W = 3.5;  // 막대 반폭 (격자 10m — 막대 7m + 간격 3m)
+  const X = [], Y = [], Z = [], I = [], J = [], K = [], INT = [];
+  const quads = [[0,1,2,3],[4,5,6,7],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]];
+  bars.forEach((b, bi) => {
+    const o = bi * 8, h = b.v;
+    [[-W,-W,0],[W,-W,0],[W,W,0],[-W,W,0],[-W,-W,h],[W,-W,h],[W,W,h],[-W,W,h]]
+      .forEach(([dx, dy, z]) => { X.push(b.x + dx); Y.push(b.y + dy); Z.push(z); INT.push(b.v); });
+    quads.forEach(([a, c, d, e]) => { I.push(o+a, o+a); J.push(o+c, o+d); K.push(o+d, o+e); });
+  });
+  const valueTitle = `평균 ${data.sensor.name}${data.sensor.unit ? ` (${data.sensor.unit})` : ""}`;
+
+  Plotly.react("hm-plot", [
+    {
+      type: "mesh3d", x: X, y: Y, z: Z, i: I, j: J, k: K,
+      intensity: INT, colorscale: COLORSCALE, cmin: vmin, cmax: vmax,
+      flatshading: true, hoverinfo: "skip",
+      colorbar: hmColorbar(`평균 ${data.sensor.name}${data.sensor.unit ? `<br>(${data.sensor.unit})` : ""}`),
+      lighting: { ambient: 0.75, diffuse: 0.4, specular: 0.05 },
+    },
+    { // 막대 상단의 투명 마커 — 호버 툴팁 전용
+      type: "scatter3d", mode: "markers",
+      x: bars.map((b) => b.x), y: bars.map((b) => b.y), z: bars.map((b) => b.v),
+      customdata: bars.map((b) => [b.v, b.depths, b.samples]),
+      marker: { size: 14, color: "rgba(0,0,0,0)" },
+      hovertemplate: "위치 X: %{x:.0f} m<br>위치 Y: %{y:.0f} m<br>" +
+        `평균 ${data.sensor.name}: %{customdata[0]:.2f} ${data.sensor.unit}<br>` +
+        "수심 셀 %{customdata[1]}개 · 누적 측정 %{customdata[2]}회<extra></extra>",
+      showlegend: false,
+    },
+  ], {
+    uirevision: "bars",
+    paper_bgcolor: HM_INK.surface,
+    font: { family: 'system-ui, "Segoe UI", "Malgun Gothic", sans-serif' },
+    scene: {
+      xaxis: hmAxis("동서 위치 X (m)", [-5, 105]),
+      yaxis: hmAxis("남북 위치 Y (m)", [-5, 105]),
+      zaxis: hmAxis(valueTitle, [0, vmax * 1.15]),
+      aspectmode: "manual", aspectratio: { x: 1, y: 1, z: 0.6 },
+      camera: { eye: { x: 1.6, y: -1.6, z: 0.8 } },
+      bgcolor: HM_INK.surface,
+    },
+    margin: { l: 0, r: 0, t: 6, b: 0 },
+  }, { displayModeBar: false, responsive: true });
+}
+
+// ── 셀 뷰: (X, Y, 수심) 셀별 평균 — 수심 방향 상세 ──────────────────
+function renderCells(data) {
+  const cells = data.cells;
+  const vals = cells.map((c) => c[3]);
+  const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
+  const axis = {
+    gridcolor: HM_INK.grid, zerolinecolor: HM_INK.grid, backgroundcolor: HM_INK.surface,
+    title: { font: { color: HM_INK.ink2, size: 12 } }, tickfont: { color: HM_INK.muted, size: 10 },
+  };
+  Plotly.react("hm-plot", [{
+    type: "scatter3d", mode: "markers",
+    x: cells.map((c) => c[0]), y: cells.map((c) => c[1]), z: cells.map((c) => c[2]),
+    customdata: cells.map((c) => c[4]),
+    marker: {
+      size: vals.map((v) => 3 + Math.pow((v - min) / span, 1.5) * 11),
+      symbol: "square", color: vals, colorscale: COLORSCALE, opacity: 0.85,
+      colorbar: {
+        title: { text: `평균 ${data.sensor.name}${data.sensor.unit ? `<br>(${data.sensor.unit})` : ""}`,
+                 font: { color: HM_INK.ink2, size: 12 } },
+        tickfont: { color: HM_INK.muted, size: 11 }, thickness: 12, len: 0.6,
+      },
+    },
+    hovertemplate: "위치 X: %{x:.0f} m<br>위치 Y: %{y:.0f} m<br>수심: %{z:.1f} m<br>" +
+      `평균 ${data.sensor.name}: %{marker.color} ${data.sensor.unit}<br>누적 측정: %{customdata}회<extra></extra>`,
+  }], {
+    uirevision: "keep",   // 갱신 시 사용자가 돌려놓은 카메라 시점 유지
+    paper_bgcolor: HM_INK.surface,
+    font: { family: 'system-ui, "Segoe UI", "Malgun Gothic", sans-serif' },
+    scene: {
+      xaxis: { ...axis, title: { text: "동서 위치 X (m)", font: axis.title.font }, range: [-5, 105] },
+      yaxis: { ...axis, title: { text: "남북 위치 Y (m)", font: axis.title.font }, range: [-5, 105] },
+      zaxis: { ...axis, title: { text: "수심 (m)", font: axis.title.font }, range: [5.4, 0] },
+      aspectmode: "manual", aspectratio: { x: 1, y: 1, z: 0.5 },
+      camera: { eye: { x: 1.5, y: -1.5, z: 0.9 } },
+      bgcolor: HM_INK.surface,
+    },
+    margin: { l: 0, r: 0, t: 6, b: 0 },
+  }, { displayModeBar: false, responsive: true });
+}
+
+async function hmFetch() {
+  if (!hmSensor) return;
+  const r = await fetch(`/api/heatmap?sensor=${hmSensor}`, { cache: "no-store" });
+  if (r.ok) renderHeatmap(await r.json());
+}
+
+async function heatmapTick() {
+  try { await hmFetch(); }
+  catch { /* 오프라인 표시는 telemetry 폴링이 담당 */ }
+  finally { setTimeout(heatmapTick, HM_POLL_MS); }
+}
+
+$("hm-sensor").addEventListener("change", (e) => { hmSensor = e.target.value; hmFetch().catch(() => {}); });
+$("hm-view").addEventListener("change", (e) => { hmView = e.target.value; hmFetch().catch(() => {}); });
+heatmapTick();
+
+async function tick() {
+  try {
+    const r = await fetch("/api/telemetry", { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+    $("offline").classList.remove("show");
+  } catch {
+    $("offline").classList.add("show");
+  } finally {
+    setTimeout(tick, POLL_MS);
+  }
+}
+tick();
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(dataviz)",
+      "PowerShell(python dashboard_server.py)",
+      "PowerShell($h = Invoke-RestMethod \"http://localhost:8000/api/heatmap?sensor=ec\"; \"EC 셀 수: $\\($h.cells.Count\\)\"; if \\($h.cells.Count -gt 0\\) { \"셀 예시: $\\($h.cells[0] -join ', '\\)\" }; $t = Invoke-RestMethod \"http://localhost:8000/api/telemetry\"; \"상태: $\\($t.platform_status.label\\) / 지점: $\\($t.mission.point_index\\)\")",
+      "PowerShell($m = Invoke-RestMethod \"https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json\"; \"총 $\\($m.plugins.Count\\)개\"; $m.plugins | Group-Object category | Sort-Object Count -Descending | ForEach-Object { \"$\\($_.Name\\): $\\($_.Count\\)개 — $\\(\\($_.Group.name | Select-Object -First 8\\) -join ', '\\)\" })",
+      "PowerShell(python -c \"import json,urllib.request; d=json.load\\(urllib.request.urlopen\\('https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json'\\)\\); ps=d['plugins']; print\\(len\\(ps\\)\\); [print\\(f\\\\\"[{p.get\\('category','-'\\)}] {p['name']}\\\\\"\\) for p in ps]\" 2>&1 | Out-String)",
+      "Bash(curl -s https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json)",
+      "Bash(python -c ' *)",
+      "PowerShell(claude plugin *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(Invoke-RestMethod http://localhost:8000/api/telemetry -TimeoutSec 5 | ConvertTo-Json -Depth 5)"
+    ]
+  }
+}
