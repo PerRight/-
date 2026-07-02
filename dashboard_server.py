@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from thresholds import SENSOR_INFO
+from thresholds import SENSOR_INFO, exceedance
 
 PORT = 8000
 BASE_LAT, BASE_LON = 37.24560, 127.08590  # 측정 수역 남서쪽 기준점 (예시 좌표)
@@ -138,6 +138,42 @@ def resolve_run(run):
     except ValueError:
         return None, None
     return (RUNS[rid], f"{rid}차") if rid in RUNS else (None, None)
+
+
+def cells_for(source, sensor_id, decimals):
+    """셀 집계 → [[x, y, 수심, 평균, 측정 횟수], ...]."""
+    return [
+        [x, y, d, round(acc[sensor_id][0] / acc[sensor_id][1], decimals), acc[sensor_id][1]]
+        for (x, y, d), acc in source.items()
+        if sensor_id in acc
+    ]
+
+
+def build_summary(source):
+    """pH·EC 둘 중 하나라도 임계값을 넘는 셀 수와 최고 오염 셀."""
+    polluted = 0
+    worst = None  # (초과 비율, sensor_id, 평균, x, y, 수심)
+    for (x, y, d), acc in source.items():
+        cell_worst = None
+        for sid, (total, n) in acc.items():
+            r = exceedance(sid, total / n)
+            if r > 0 and (cell_worst is None or r > cell_worst[0]):
+                cell_worst = (r, sid, total / n, x, y, d)
+        if cell_worst:
+            polluted += 1
+            if worst is None or cell_worst[0] > worst[0]:
+                worst = cell_worst
+    if worst is None:
+        return {"polluted_cells": 0, "worst": None}
+    r, sid, mean, x, y, d = worst
+    info = SENSOR_INFO[sid]
+    return {
+        "polluted_cells": polluted,
+        "worst": {
+            "sensor": info["name"], "value": round(mean, info["decimals"]),
+            "unit": info["unit"], "x": x, "y": y, "depth": d,
+        },
+    }
 
 
 def grid_path():
@@ -285,18 +321,22 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/heatmap"):
             query = parse_qs(urlparse(self.path).query)
             sensor_id = query.get("sensor", [SENSORS[0]["id"]])[0]
+            run = query.get("run", ["live"])[0]
             meta = next((s for s in SENSORS if s["id"] == sensor_id), None)
-            if meta is None:
-                self._send(404, "text/plain; charset=utf-8", b"unknown sensor")
+            source, _ = resolve_run(run)
+            if meta is None or source is None:
+                self._send(404, "text/plain; charset=utf-8", b"unknown sensor or run")
                 return
-            with LOCK:
-                cells = [
-                    [x, y, d, round(acc[sensor_id][0] / acc[sensor_id][1], meta["decimals"]), acc[sensor_id][1]]
-                    for (x, y, d), acc in HEATMAP.items()
-                    if sensor_id in acc
-                ]
             body = json.dumps(
-                {"sensor": {"id": sensor_id, "name": meta["name"], "unit": meta["unit"]}, "cells": cells},
+                {
+                    "sensor": {
+                        "id": sensor_id, "name": meta["name"], "unit": meta["unit"],
+                        "threshold": meta["threshold"],
+                    },
+                    "run": run,
+                    "cells": cells_for(source, sensor_id, meta["decimals"]),
+                    "summary": build_summary(source),
+                },
                 ensure_ascii=False,
             ).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", body)

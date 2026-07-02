@@ -37,3 +37,25 @@ def test_merge_runs():
     merged = srv.merge_runs(runs)
     assert merged[(0.0, 0.0, 0.5)]["ph"] == [13.0, 2]
     assert merged[(10.0, 0.0, 0.5)]["ec"] == [300.0, 1]
+
+
+def test_cells_for_rounds_mean():
+    source = {(0.0, 0.0, 0.5): {"ec": [604.0, 2]}}
+    assert srv.cells_for(source, "ec", 0) == [[0.0, 0.0, 0.5, 302.0, 2]]
+
+
+def test_build_summary_counts_either_sensor():
+    source = {
+        (0.0, 0.0, 0.5): {"ph": [7.0, 1], "ec": [600.0, 1]},   # EC만 초과 → 오염
+        (10.0, 0.0, 0.5): {"ph": [7.0, 1], "ec": [300.0, 1]},  # 정상
+    }
+    s = srv.build_summary(source)
+    assert s["polluted_cells"] == 1
+    assert s["worst"]["sensor"] == "EC 전기전도도"
+    assert s["worst"]["value"] == 600.0
+    assert (s["worst"]["x"], s["worst"]["y"], s["worst"]["depth"]) == (0.0, 0.0, 0.5)
+
+
+def test_build_summary_clean():
+    s = srv.build_summary({(0.0, 0.0, 0.5): {"ph": [7.0, 1]}})
+    assert s == {"polluted_cells": 0, "worst": None}
