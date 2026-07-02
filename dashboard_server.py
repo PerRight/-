@@ -24,16 +24,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from thresholds import SENSOR_INFO
+
 PORT = 8000
 BASE_LAT, BASE_LON = 37.24560, 127.08590  # 측정 수역 남서쪽 기준점 (예시 좌표)
 
 def plume(x, y, depth):
-    """시뮬레이션용 오염 플룸 강도(0~1): 주 오염원(65, 40, 수심 3m) + 보조 오염원(25, 75, 표층).
+    """시뮬레이션용 오염 플룸 강도(0~1): 주 오염원(65, 40, 수심 1m) + 보조 오염원(25, 75, 표층 0.5m).
 
     센서값에 공간 분포를 만들어 3D 히트맵에서 핫스팟이 보이게 한다.
     """
-    p1 = math.exp(-((x - 65) ** 2 + (y - 40) ** 2) / (2 * 18**2) - (depth - 3.0) ** 2 / (2 * 1.2**2))
-    p2 = 0.4 * math.exp(-((x - 25) ** 2 + (y - 75) ** 2) / (2 * 12**2) - (depth - 1.5) ** 2 / (2 * 1.0**2))
+    p1 = math.exp(-((x - 65) ** 2 + (y - 40) ** 2) / (2 * 18**2) - (depth - 1.0) ** 2 / (2 * 1.2**2))
+    p2 = 0.4 * math.exp(-((x - 25) ** 2 + (y - 75) ** 2) / (2 * 12**2) - (depth - 0.5) ** 2 / (2 * 1.0**2))
     return min(p1 + p2, 1.0)
 
 
@@ -42,10 +44,12 @@ def plume(x, y, depth):
 SENSORS = [
     {
         "id": "ph", "name": "pH", "unit": "", "decimals": 2,
+        "threshold": SENSOR_INFO["ph"]["threshold"],
         "read": lambda x, y, d, rng: 7.10 - 0.04 * d - 1.1 * plume(x, y, d) + rng.gauss(0, 0.03),
     },
     {
         "id": "ec", "name": "EC 전기전도도", "unit": "µS/cm", "decimals": 0,
+        "threshold": SENSOR_INFO["ec"]["threshold"],
         "read": lambda x, y, d, rng: 320 + 6 * d + 220 * plume(x, y, d) + rng.gauss(0, 4),
     },
     # 향후 확장 예시 — 주석만 해제하면 화면에 카드와 히트맵 항목이 자동 추가된다:
@@ -62,8 +66,10 @@ SENSORS = [
 # ── 측정 미션 설정 (generate_data.py 와 동일한 격자) ──────────────────
 AREA_SIZE = 100.0
 GRID_STEP = 10.0
-DEPTH_STEP = 0.5
-MAX_DEPTH = 5.0
+DEPTH_LEVELS = [0.5, 1.0, 1.5]  # 측정 수심 (m) — 각 수심 1분, 지점당 3분
+DEPTH_DWELL = 3.0     # 수심당 측정 체류 시간 (s) — 데모용. 실제 운용은 60.0 (1분).
+DEPTH_STEP = 0.5      # 센서 회수 속도 계산용
+MAX_DEPTH = DEPTH_LEVELS[-1]
 MOVE_SPEED = 3.0      # m/s (데모용 — 히트맵이 채워지는 걸 빠르게 보기 위해 실제보다 빠름)
 TICK = 0.5            # 시뮬레이션 주기 (s)
 
@@ -105,6 +111,7 @@ def simulator():
     state = "moving"
     state_until = 0.0     # 현재 상태가 끝나는 시각 (안정화 등 시간 기반 상태용)
     depth = 0.0
+    depth_idx = 0
     battery = 100.0
     last_sample_at = None
     started_at = datetime.now()
@@ -128,10 +135,11 @@ def simulator():
             battery -= 0.010
         elif state == "stabilizing":
             if now >= state_until:
-                state, depth = "measuring", 0.0
+                state, depth_idx = "measuring", 0
+                state_until = now + DEPTH_DWELL
             battery -= 0.003
         elif state == "measuring":
-            depth = min(depth + DEPTH_STEP, MAX_DEPTH)
+            depth = DEPTH_LEVELS[depth_idx]
             with LOCK:
                 cell = HEATMAP.setdefault((x, y, depth), {})
                 for s in SENSORS:
@@ -142,8 +150,12 @@ def simulator():
                         acc[0] += v
                         acc[1] += 1
             last_sample_at = datetime.now()
-            if depth >= MAX_DEPTH:
-                state = "retrieving"
+            if now >= state_until:  # 이 수심에서 1분(데모 3초) 경과 → 다음 수심
+                depth_idx += 1
+                if depth_idx >= len(DEPTH_LEVELS):
+                    state = "retrieving"
+                else:
+                    state_until = now + DEPTH_DWELL
             battery -= 0.005
         elif state == "retrieving":
             depth = max(depth - DEPTH_STEP * 2, 0.0)
@@ -193,6 +205,7 @@ def simulator():
                             "id": s["id"],
                             "name": s["name"],
                             "unit": s["unit"],
+                            "threshold": s["threshold"],
                             "connected": now >= disconnected_until[s["id"]],
                             "value": values[s["id"]] if now >= disconnected_until[s["id"]] else None,
                         }
