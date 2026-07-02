@@ -14,6 +14,7 @@
   측정이 쌓일수록 셀이 채워져 대시보드의 실시간 3D 히트맵이 변화한다.
 """
 
+import csv
 import json
 import math
 import random
@@ -81,9 +82,62 @@ STATE_LABELS = {
     "done": "지점 측정 완료",
 }
 
+DATA_CSV = Path(__file__).parent / "data" / "measurements.csv"
+RUNS = {}       # run_id → {(x, y, depth): {sensor_id: [합계, 횟수]}} — 과거 탐사 집계
+RUN_META = []   # [{"id", "date", "samples"}, ...] — 회차 드롭다운용
+ALL_CELLS = {}  # 전체 회차 누적 집계
+
 TELEMETRY = {}
 HEATMAP = {}   # (x, y, depth) → {sensor_id: [값 합계, 측정 횟수]} — 누적 집계
 LOCK = threading.Lock()
+
+
+def load_runs(csv_path=DATA_CSV):
+    """과거 탐사 CSV → (회차별 셀 집계, 회차 메타 목록). 파일이 없으면 빈 결과."""
+    runs, meta = {}, {}
+    if not Path(csv_path).exists():
+        return {}, []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            rid = int(row["run_id"])
+            key = (float(row["x_m"]), float(row["y_m"]), float(row["depth_m"]))
+            cell = runs.setdefault(rid, {}).setdefault(key, {})
+            for sid in ("ph", "ec"):
+                if row.get(sid):
+                    acc = cell.setdefault(sid, [0.0, 0])
+                    acc[0] += float(row[sid])
+                    acc[1] += 1
+            m = meta.setdefault(rid, {"id": rid, "date": row["timestamp"][:10], "samples": 0})
+            m["samples"] += 1
+    return runs, [meta[k] for k in sorted(meta)]
+
+
+def merge_runs(runs):
+    """모든 회차를 합친 누적 집계."""
+    merged = {}
+    for cells in runs.values():
+        for key, acc in cells.items():
+            m = merged.setdefault(key, {})
+            for sid, (total, n) in acc.items():
+                a = m.setdefault(sid, [0.0, 0])
+                a[0] += total
+                a[1] += n
+    return merged
+
+
+def resolve_run(run):
+    """run 파라미터(live|all|회차 번호) → (셀 집계, 라벨). 모르는 값이면 (None, None)."""
+    if run == "live":
+        with LOCK:
+            snap = {k: {s: list(a) for s, a in v.items()} for k, v in HEATMAP.items()}
+        return snap, "실시간"
+    if run == "all":
+        return ALL_CELLS, "전체 누적"
+    try:
+        rid = int(run)
+    except ValueError:
+        return None, None
+    return (RUNS[rid], f"{rid}차") if rid in RUNS else (None, None)
 
 
 def grid_path():
@@ -225,6 +279,9 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 body = json.dumps(TELEMETRY, ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", body)
+        elif self.path == "/api/runs":
+            body = json.dumps({"runs": RUN_META}, ensure_ascii=False).encode("utf-8")
+            self._send(200, "application/json; charset=utf-8", body)
         elif self.path.startswith("/api/heatmap"):
             query = parse_qs(urlparse(self.path).query)
             sensor_id = query.get("sensor", [SENSORS[0]["id"]])[0]
@@ -259,6 +316,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global RUNS, RUN_META, ALL_CELLS
+    RUNS, RUN_META = load_runs()
+    ALL_CELLS = merge_runs(RUNS)
     threading.Thread(target=simulator, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Hi-Flow 대시보드 실행 중: http://localhost:{PORT}  (종료: Ctrl+C)")
