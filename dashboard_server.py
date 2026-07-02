@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from thresholds import SENSOR_INFO, exceedance
+from thresholds import SENSOR_INFO, exceedance, pollution_reason
 
 PORT = 8000
 BASE_LAT, BASE_LON = 37.24560, 127.08590  # 측정 수역 남서쪽 기준점 (예시 좌표)
@@ -174,6 +174,53 @@ def build_summary(source):
             "unit": info["unit"], "x": x, "y": y, "depth": d,
         },
     }
+
+
+EXPORT_HEADER = ["탐사", "X (m)", "Y (m)", "수심 (m)", "평균 pH", "평균 EC (µS/cm)", "측정 횟수", "판정", "사유"]
+
+
+def build_export_rows(source, label):
+    """셀 집계 → 내보내기 행 목록 (좌표 정렬, 오염 판정 포함)."""
+    rows = []
+    for (x, y, d), acc in sorted(source.items()):
+        ph = round(acc["ph"][0] / acc["ph"][1], 2) if "ph" in acc else None
+        ec = round(acc["ec"][0] / acc["ec"][1], 0) if "ec" in acc else None
+        n = max((a[1] for a in acc.values()), default=0)
+        reason = pollution_reason(ph, ec)
+        rows.append([label, x, y, d, ph, ec, n, "오염" if reason else "정상", reason])
+    return rows
+
+
+def export_xlsx(rows):
+    """openpyxl 미설치면 ImportError — 호출부에서 CSV로 대체한다."""
+    import io
+
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "셀별 데이터"
+    ws.append(EXPORT_HEADER)
+    red = PatternFill("solid", start_color="FFF4CCCC")
+    for row in rows:
+        ws.append(row)
+        if row[7] == "오염":
+            for cell in ws[ws.max_row]:
+                cell.fill = red
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def export_csv(rows):
+    import io
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(EXPORT_HEADER)
+    w.writerows(rows)
+    return buf.getvalue().encode("utf-8-sig")
 
 
 def grid_path():
@@ -340,6 +387,26 @@ class Handler(BaseHTTPRequestHandler):
                 ensure_ascii=False,
             ).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", body)
+        elif self.path.startswith("/api/export"):
+            query = parse_qs(urlparse(self.path).query)
+            run = query.get("run", ["live"])[0]
+            source, label = resolve_run(run)
+            if source is None:
+                self._send(404, "text/plain; charset=utf-8", b"unknown run")
+                return
+            rows = build_export_rows(source, label)
+            try:
+                body, ext = export_xlsx(rows), "xlsx"
+                ctype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            except ImportError:
+                body, ext = export_csv(rows), "csv"
+                ctype = "text/csv; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Disposition", f'attachment; filename="hiflow_export_{run}.{ext}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self._send(404, "text/plain; charset=utf-8", b"Not Found")
 

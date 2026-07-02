@@ -59,3 +59,33 @@ def test_build_summary_counts_either_sensor():
 def test_build_summary_clean():
     s = srv.build_summary({(0.0, 0.0, 0.5): {"ph": [7.0, 1]}})
     assert s == {"polluted_cells": 0, "worst": None}
+
+
+def test_build_export_rows():
+    source = {(0.0, 0.0, 0.5): {"ph": [6.0, 1], "ec": [600.0, 1]}}
+    rows = srv.build_export_rows(source, "1차")
+    assert rows == [["1차", 0.0, 0.0, 0.5, 6.0, 600.0, 1, "오염", "pH·EC"]]
+
+
+def test_build_export_rows_clean():
+    source = {(0.0, 0.0, 0.5): {"ph": [7.0, 1], "ec": [300.0, 1]}}
+    rows = srv.build_export_rows(source, "실시간")
+    assert rows[0][7] == "정상" and rows[0][8] == ""
+
+
+def test_export_xlsx_roundtrip():
+    import io
+
+    from openpyxl import load_workbook
+
+    rows = [["1차", 0.0, 0.0, 0.5, 6.0, 600.0, 1, "오염", "pH·EC"]]
+    wb = load_workbook(io.BytesIO(srv.export_xlsx(rows)))
+    ws = wb["셀별 데이터"]
+    assert ws.max_row == 2
+    assert ws.cell(2, 8).value == "오염"
+
+
+def test_export_csv_has_bom():
+    rows = [["1차", 0.0, 0.0, 0.5, 6.0, 600.0, 1, "오염", "pH·EC"]]
+    data = srv.export_csv(rows)
+    assert data.startswith(b"\xef\xbb\xbf")  # Excel 한글 인식용 BOM
