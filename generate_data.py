@@ -12,6 +12,7 @@
 (컬럼 형식: run_id, timestamp, x_m, y_m, depth_m, ph, ec)
 """
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +61,8 @@ def true_ec(x, y, depth, run):
 
 
 def main():
+    if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
+        sys.stdout.reconfigure(encoding="utf-8")  # Windows 콘솔에서 µ 등 출력 보장
     coords = np.arange(0.0, AREA_SIZE + 0.1, GRID_STEP)
     rows = []
     for run in range(NUM_RUNS):
