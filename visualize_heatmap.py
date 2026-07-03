@@ -11,6 +11,7 @@ data/measurements.csv (run_id, timestamp, x_m, y_m, depth_m, ph, ec) 를
 색상: 정상 셀은 단일 색상(파랑) 순차 램프 (밝음 = 낮음 → 어두움 = 높음).
 """
 
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -217,6 +218,8 @@ def make_png(df, sensor_id):
 
 
 def main():
+    if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
+        sys.stdout.reconfigure(encoding="utf-8")  # Windows 콘솔에서 µ 등 출력 보장
     if not DATA_PATH.exists():
         raise SystemExit("data/measurements.csv 가 없습니다. 먼저 generate_data.py 를 실행하세요.")
     df = pd.read_csv(DATA_PATH)
