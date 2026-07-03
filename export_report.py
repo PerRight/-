@@ -105,6 +105,8 @@ def main():
     if not DATA_PATH.exists():
         raise SystemExit("data/measurements.csv 가 없습니다. 먼저 generate_data.py 를 실행하세요.")
     df = pd.read_csv(DATA_PATH)
+    if df.empty:
+        raise SystemExit("data/measurements.csv 에 데이터가 없습니다. 먼저 generate_data.py 를 실행하세요.")
     summary = write_report(df)
     print(f"저장 완료: {OUT_PATH}")
     print(summary.to_string(index=False))

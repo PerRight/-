@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
+import pytest
 
+import export_report
 from export_report import cell_means, run_summary, write_report
 
 
@@ -45,3 +47,23 @@ def test_write_report_sheets(tmp_path):
     assert wb.sheetnames == ["회차별 요약", "오염 셀 목록", "셀별 전체 데이터"]
     assert wb["오염 셀 목록"].max_row == 2  # 헤더 + 오염 셀 1개
     assert wb["셀별 전체 데이터"].max_row == 4  # 헤더 + 셀 3개
+
+    def is_red(row):
+        return all(str(c.fill.start_color.rgb).endswith("F4CCCC") for c in row)
+
+    # 오염 셀 목록: 데이터 행 전부 빨간 배경
+    assert is_red(wb["오염 셀 목록"][2])
+    # 셀별 전체 데이터: 판정 사유(8열) 오염 행만 빨간 배경
+    detail = wb["셀별 전체 데이터"]
+    assert detail.cell(row=2, column=8).value == "pH·EC"
+    assert is_red(detail[2])
+    assert detail.cell(row=3, column=8).value is None  # 정상 셀 (빈 사유)
+    assert not is_red(detail[3])
+
+
+def test_main_empty_csv(tmp_path, monkeypatch):
+    empty = tmp_path / "measurements.csv"
+    empty.write_text("run_id,timestamp,x_m,y_m,depth_m,ph,ec\n", encoding="utf-8")
+    monkeypatch.setattr(export_report, "DATA_PATH", empty)
+    with pytest.raises(SystemExit, match="데이터가 없습니다"):
+        export_report.main()
