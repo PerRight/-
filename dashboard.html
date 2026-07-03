@@ -181,6 +181,7 @@
       측정이 누적될수록 셀이 채워진다 · 격자 셀 <span id="hm-count">0</span>개
       · 마우스 드래그로 회전, 셀에 올리면 상세값 표시
     </div>
+    <div class="sub" id="hm-summary" style="margin-top:4px"></div>
     <div id="hm-empty">아직 측정된 셀이 없습니다 — 첫 측정 지점 도착 후 채워집니다.</div>
     <div id="hm-plot" hidden></div>
   </div>
@@ -244,6 +245,7 @@ function renderSensor(s) {
   const c = ensureSensorCard(s);
   if (s.connected) {
     c.val.textContent = s.value !== null ? s.value : "—";
+    c.val.style.color = overThreshold(s.threshold, s.value) ? "var(--st-critical)" : "";
     c.dot.style.background = "var(--st-good)";
     c.conn.textContent = "연결됨";
     if (s.value !== null) {
@@ -327,6 +329,11 @@ function render(t) {
 const BLUE_RAMP = ["#cde2fb","#b7d3f6","#9ec5f4","#86b6ef","#6da7ec","#5598e7",
                    "#3987e5","#2a78d6","#256abf","#1c5cab","#184f95","#104281","#0d366b"];
 const COLORSCALE = BLUE_RAMP.map((c, i) => [i / (BLUE_RAMP.length - 1), c]);
+const POLLUTED = "#d03b3b";   // 임계값 초과(오염) 표시색 — Plotly 내부라 CSS 변수 사용 불가
+function overThreshold(t, v) {
+  return !!t && v !== null && v !== undefined &&
+    ((t.min !== undefined && v < t.min) || (t.max !== undefined && v > t.max));
+}
 const HM_DARK = matchMedia("(prefers-color-scheme: dark)").matches;
 const HM_INK = { surface: HM_DARK ? "#1a1a19" : "#fcfcfb", ink2: HM_DARK ? "#c3c2b7" : "#52514e",
                  muted: "#898781", grid: HM_DARK ? "#2c2c2a" : "#e1e0d9" };
@@ -353,6 +360,7 @@ function hmAxis(text, range) {
 function renderHeatmap(data) {
   const cells = data.cells;
   $("hm-count").textContent = cells.length;
+  renderSummary(data.summary);
   if (!cells.length) return;
   $("hm-empty").hidden = true;
   $("hm-plot").hidden = false;
@@ -360,7 +368,23 @@ function renderHeatmap(data) {
   else renderCells(data);
 }
 
-// ── 막대 뷰: (X, Y) 지점별 수심 평균을 높이로 — 프로토타입 예시 스타일 ──
+// ── 오염 요약 한 줄: pH·EC 둘 중 하나라도 임계값을 넘는 셀 기준 ──────
+function renderSummary(s) {
+  const el = $("hm-summary");
+  if (!s || !s.polluted_cells) {
+    el.textContent = "오염 셀 없음 · 기준: pH 6.5~8.5 / EC 500 µS/cm 이하";
+    el.style.color = "var(--muted)";
+    return;
+  }
+  const w = s.worst;
+  el.textContent = `⚠ 오염 셀 ${s.polluted_cells}개 · 최고 ${w.sensor} ${w.value}${w.unit}`
+    + ` @ (X ${w.x} m, Y ${w.y} m, 수심 ${w.depth} m)`;
+  el.style.color = "var(--st-critical)";
+}
+
+// ── 막대 뷰: (X, Y) 지점별 수심 평균 — 경사 강조·오염 빨강 ──────────
+const BAR_EXAGGERATION = 2.5;   // 멱지수 — 클수록 높은 값이 더 가파르게 솟는다
+
 function renderBars(data) {
   const byXY = new Map();
   data.cells.forEach(([x, y, , v, n]) => {
@@ -371,46 +395,57 @@ function renderBars(data) {
   });
   const bars = [...byXY.values()].map((a) => ({ ...a, v: a.sum / a.depths }));
   const vals = bars.map((b) => b.v);
-  const vmin = Math.min(...vals), vmax = Math.max(...vals);
+  const vmin = Math.min(...vals), vmax = Math.max(...vals), span = vmax - vmin || 1;
+  // 경사 강조: 정규화 값에 멱함수 — 낮은 막대는 깔리고 높은 막대는 급하게 솟는다.
+  // 최소 2% 높이를 보장해 가장 낮은 지점도 보이게 한다. 툴팁 수치는 실제 값 그대로.
+  const barH = (v) => (0.02 + 0.98 * Math.pow((v - vmin) / span, BAR_EXAGGERATION)) * span;
+  const th = data.sensor.threshold;
 
   // Plotly 에는 3D 막대가 없어 지점마다 직육면체를 Mesh3d 로 만든다.
   const W = 3.5;  // 막대 반폭 (격자 10m — 막대 7m + 간격 3m)
-  const X = [], Y = [], Z = [], I = [], J = [], K = [], INT = [];
   const quads = [[0,1,2,3],[4,5,6,7],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]];
-  bars.forEach((b, bi) => {
-    const o = bi * 8, h = b.v;
+  const mesh = () => ({ X: [], Y: [], Z: [], I: [], J: [], K: [], INT: [] });
+  const normal = mesh(), bad = mesh();
+  bars.forEach((b) => {
+    const m = overThreshold(th, b.v) ? bad : normal;
+    const o = m.X.length, h = barH(b.v);
     [[-W,-W,0],[W,-W,0],[W,W,0],[-W,W,0],[-W,-W,h],[W,-W,h],[W,W,h],[-W,W,h]]
-      .forEach(([dx, dy, z]) => { X.push(b.x + dx); Y.push(b.y + dy); Z.push(z); INT.push(b.v); });
-    quads.forEach(([a, c, d, e]) => { I.push(o+a, o+a); J.push(o+c, o+d); K.push(o+d, o+e); });
+      .forEach(([dx, dy, z]) => { m.X.push(b.x + dx); m.Y.push(b.y + dy); m.Z.push(z); m.INT.push(b.v); });
+    quads.forEach(([a, c, d, e]) => { m.I.push(o+a, o+a); m.J.push(o+c, o+d); m.K.push(o+d, o+e); });
   });
-  const valueTitle = `평균 ${data.sensor.name}${data.sensor.unit ? ` (${data.sensor.unit})` : ""}`;
 
-  Plotly.react("hm-plot", [
-    {
-      type: "mesh3d", x: X, y: Y, z: Z, i: I, j: J, k: K,
-      intensity: INT, colorscale: COLORSCALE, cmin: vmin, cmax: vmax,
-      flatshading: true, hoverinfo: "skip",
-      colorbar: hmColorbar(`평균 ${data.sensor.name}${data.sensor.unit ? `<br>(${data.sensor.unit})` : ""}`),
-      lighting: { ambient: 0.75, diffuse: 0.4, specular: 0.05 },
-    },
-    { // 막대 상단의 투명 마커 — 호버 툴팁 전용
-      type: "scatter3d", mode: "markers",
-      x: bars.map((b) => b.x), y: bars.map((b) => b.y), z: bars.map((b) => b.v),
-      customdata: bars.map((b) => [b.v, b.depths, b.samples]),
-      marker: { size: 14, color: "rgba(0,0,0,0)" },
-      hovertemplate: "위치 X: %{x:.0f} m<br>위치 Y: %{y:.0f} m<br>" +
-        `평균 ${data.sensor.name}: %{customdata[0]:.2f} ${data.sensor.unit}<br>` +
-        "수심 셀 %{customdata[1]}개 · 누적 측정 %{customdata[2]}회<extra></extra>",
-      showlegend: false,
-    },
-  ], {
+  const lighting = { ambient: 0.75, diffuse: 0.4, specular: 0.05 };
+  const traces = [];
+  if (normal.X.length) traces.push({
+    type: "mesh3d", x: normal.X, y: normal.Y, z: normal.Z, i: normal.I, j: normal.J, k: normal.K,
+    intensity: normal.INT, colorscale: COLORSCALE, cmin: vmin, cmax: vmax,
+    flatshading: true, hoverinfo: "skip", lighting,
+    colorbar: hmColorbar(`평균 ${data.sensor.name}${data.sensor.unit ? `<br>(${data.sensor.unit})` : ""}`),
+  });
+  if (bad.X.length) traces.push({   // 임계값 초과 막대 — 빨간색
+    type: "mesh3d", x: bad.X, y: bad.Y, z: bad.Z, i: bad.I, j: bad.J, k: bad.K,
+    color: POLLUTED, flatshading: true, hoverinfo: "skip", lighting,
+  });
+  traces.push({ // 막대 상단의 투명 마커 — 호버 툴팁 전용 (실제 측정값 표시)
+    type: "scatter3d", mode: "markers",
+    x: bars.map((b) => b.x), y: bars.map((b) => b.y), z: bars.map((b) => barH(b.v)),
+    customdata: bars.map((b) => [b.v, b.depths, b.samples, overThreshold(th, b.v) ? "⚠ 오염" : "정상"]),
+    marker: { size: 14, color: "rgba(0,0,0,0)" },
+    hovertemplate: "위치 X: %{x:.0f} m<br>위치 Y: %{y:.0f} m<br>" +
+      `평균 ${data.sensor.name}: %{customdata[0]:.2f} ${data.sensor.unit}<br>` +
+      "판정: %{customdata[3]}<br>수심 셀 %{customdata[1]}개 · 누적 측정 %{customdata[2]}회<extra></extra>",
+    showlegend: false,
+  });
+
+  Plotly.react("hm-plot", traces, {
     uirevision: "bars",
     paper_bgcolor: HM_INK.surface,
     font: { family: 'system-ui, "Segoe UI", "Malgun Gothic", sans-serif' },
     scene: {
       xaxis: hmAxis("동서 위치 X (m)", [-5, 105]),
       yaxis: hmAxis("남북 위치 Y (m)", [-5, 105]),
-      zaxis: hmAxis(valueTitle, [0, vmax * 1.15]),
+      // 경사 강조로 높이가 실제 값과 다르므로 z축 눈금은 숨긴다 — 값은 색·툴팁으로 읽는다.
+      zaxis: { ...hmAxis("", [0, span * 1.1]), showticklabels: false },
       aspectmode: "manual", aspectratio: { x: 1, y: 1, z: 0.6 },
       camera: { eye: { x: 1.6, y: -1.6, z: 0.8 } },
       bgcolor: HM_INK.surface,
@@ -419,38 +454,43 @@ function renderBars(data) {
   }, { displayModeBar: false, responsive: true });
 }
 
-// ── 셀 뷰: (X, Y, 수심) 셀별 평균 — 수심 방향 상세 ──────────────────
+// ── 셀 뷰: (X, Y, 수심) 셀별 평균 — 임계값 초과 셀은 빨간 다이아몬드 ──
 function renderCells(data) {
   const cells = data.cells;
+  const th = data.sensor.threshold;
   const vals = cells.map((c) => c[3]);
   const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
-  const axis = {
-    gridcolor: HM_INK.grid, zerolinecolor: HM_INK.grid, backgroundcolor: HM_INK.surface,
-    title: { font: { color: HM_INK.ink2, size: 12 } }, tickfont: { color: HM_INK.muted, size: 10 },
-  };
-  Plotly.react("hm-plot", [{
-    type: "scatter3d", mode: "markers",
-    x: cells.map((c) => c[0]), y: cells.map((c) => c[1]), z: cells.map((c) => c[2]),
-    customdata: cells.map((c) => c[4]),
-    marker: {
-      size: vals.map((v) => 3 + Math.pow((v - min) / span, 1.5) * 11),
-      symbol: "square", color: vals, colorscale: COLORSCALE, opacity: 0.85,
-      colorbar: {
-        title: { text: `평균 ${data.sensor.name}${data.sensor.unit ? `<br>(${data.sensor.unit})` : ""}`,
-                 font: { color: HM_INK.ink2, size: 12 } },
-        tickfont: { color: HM_INK.muted, size: 11 }, thickness: 12, len: 0.6,
-      },
-    },
+  const size = (v) => 3 + Math.pow((v - min) / span, 1.5) * 11;
+  const normal = cells.filter((c) => !overThreshold(th, c[3]));
+  const bad = cells.filter((c) => overThreshold(th, c[3]));
+  const base = (cs) => ({
+    type: "scatter3d", mode: "markers", showlegend: false,
+    x: cs.map((c) => c[0]), y: cs.map((c) => c[1]), z: cs.map((c) => c[2]),
+    customdata: cs.map((c) => [c[3], c[4]]),
     hovertemplate: "위치 X: %{x:.0f} m<br>위치 Y: %{y:.0f} m<br>수심: %{z:.1f} m<br>" +
-      `평균 ${data.sensor.name}: %{marker.color} ${data.sensor.unit}<br>누적 측정: %{customdata}회<extra></extra>`,
-  }], {
+      `평균 ${data.sensor.name}: %{customdata[0]} ${data.sensor.unit}<br>누적 측정: %{customdata[1]}회<extra></extra>`,
+  });
+  const traces = [];
+  if (normal.length) traces.push({
+    ...base(normal),
+    marker: {
+      size: normal.map((c) => size(c[3])), symbol: "square",
+      color: normal.map((c) => c[3]), colorscale: COLORSCALE, cmin: min, cmax: max, opacity: 0.85,
+      colorbar: hmColorbar(`평균 ${data.sensor.name}${data.sensor.unit ? `<br>(${data.sensor.unit})` : ""}`),
+    },
+  });
+  if (bad.length) traces.push({   // 임계값 초과 셀 — 빨간 다이아몬드
+    ...base(bad),
+    marker: { size: bad.map((c) => size(c[3]) + 2), symbol: "diamond", color: POLLUTED, opacity: 0.95 },
+  });
+  Plotly.react("hm-plot", traces, {
     uirevision: "keep",   // 갱신 시 사용자가 돌려놓은 카메라 시점 유지
     paper_bgcolor: HM_INK.surface,
     font: { family: 'system-ui, "Segoe UI", "Malgun Gothic", sans-serif' },
     scene: {
-      xaxis: { ...axis, title: { text: "동서 위치 X (m)", font: axis.title.font }, range: [-5, 105] },
-      yaxis: { ...axis, title: { text: "남북 위치 Y (m)", font: axis.title.font }, range: [-5, 105] },
-      zaxis: { ...axis, title: { text: "수심 (m)", font: axis.title.font }, range: [5.4, 0] },
+      xaxis: hmAxis("동서 위치 X (m)", [-5, 105]),
+      yaxis: hmAxis("남북 위치 Y (m)", [-5, 105]),
+      zaxis: hmAxis("수심 (m)", [1.8, 0]),
       aspectmode: "manual", aspectratio: { x: 1, y: 1, z: 0.5 },
       camera: { eye: { x: 1.5, y: -1.5, z: 0.9 } },
       bgcolor: HM_INK.surface,
