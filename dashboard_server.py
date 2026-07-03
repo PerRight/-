@@ -156,9 +156,11 @@ def build_summary(source):
     for (x, y, d), acc in source.items():
         cell_worst = None
         for sid, (total, n) in acc.items():
-            r = exceedance(sid, total / n)
+            # 화면·내보내기와 동일하게 반올림된 평균으로 판정 (표면 간 일관성)
+            mean = round(total / n, SENSOR_INFO[sid]["decimals"])
+            r = exceedance(sid, mean)
             if r > 0 and (cell_worst is None or r > cell_worst[0]):
-                cell_worst = (r, sid, total / n, x, y, d)
+                cell_worst = (r, sid, mean, x, y, d)
         if cell_worst:
             polluted += 1
             if worst is None or cell_worst[0] > worst[0]:
