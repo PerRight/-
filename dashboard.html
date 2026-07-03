@@ -81,10 +81,11 @@
   svg.spark { display: block; margin-top: 10px; width: 100%; height: 36px; }
   /* 실시간 3D 히트맵 */
   .heatmap-card { grid-column: 1 / -1; }
-  .heatmap-card select {
+  .heatmap-card select, .heatmap-card button {
     background: var(--surface); color: var(--ink); border: 1px solid var(--border);
     border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 13px;
   }
+  .heatmap-card button { cursor: pointer; }
   #hm-plot { height: 460px; }
   #hm-empty { color: var(--muted); font-size: 13px; padding: 40px 0; text-align: center; }
   @media (max-width: 560px) { .map-card { grid-column: span 1; } }
@@ -117,7 +118,7 @@
       <div class="gauge"><div id="depth-fill"></div></div>
       <div>
         <div class="big"><span id="depth">—</span><span class="unit">m</span></div>
-        <div class="sub">최대 <span id="max-depth">—</span> m · 0.5 m 간격 측정</div>
+        <div class="sub">최대 <span id="max-depth">—</span> m · 수심당 1분, 지점당 3분 측정</div>
       </div>
     </div>
   </div>
@@ -159,7 +160,12 @@
     <div class="sensor-head">
       <h2>실시간 3D 히트맵 — 누적 측정 데이터</h2>
       <span>
-        <label class="sub">보기 형태
+        <label class="sub">탐사 회차
+          <select id="hm-run" aria-label="탐사 회차 선택">
+            <option value="live">실시간</option>
+          </select>
+        </label>
+        <label class="sub" style="margin-left:10px">보기 형태
           <select id="hm-view" aria-label="히트맵 보기 형태 선택">
             <option value="bars">막대 (지점별 평균)</option>
             <option value="cells">셀 (수심별 상세)</option>
@@ -168,6 +174,7 @@
         <label class="sub" style="margin-left:10px">표시 항목
           <select id="hm-sensor" aria-label="히트맵 표시 센서 선택"></select>
         </label>
+        <button id="hm-export" type="button" style="margin-left:10px">Excel 내보내기</button>
       </span>
     </div>
     <div class="sub" style="margin-top:0">
@@ -325,6 +332,7 @@ const HM_INK = { surface: HM_DARK ? "#1a1a19" : "#fcfcfb", ink2: HM_DARK ? "#c3c
                  muted: "#898781", grid: HM_DARK ? "#2c2c2a" : "#e1e0d9" };
 const HM_POLL_MS = 2000;
 let hmSensor = null;
+let hmRun = "live";
 let hmView = "bars";   // 기본: 프로토타입 예시와 같은 3D 막대그래프
 
 function hmColorbar(title) {
@@ -453,7 +461,7 @@ function renderCells(data) {
 
 async function hmFetch() {
   if (!hmSensor) return;
-  const r = await fetch(`/api/heatmap?sensor=${hmSensor}`, { cache: "no-store" });
+  const r = await fetch(`/api/heatmap?sensor=${hmSensor}&run=${hmRun}`, { cache: "no-store" });
   if (r.ok) renderHeatmap(await r.json());
 }
 
@@ -463,6 +471,23 @@ async function heatmapTick() {
   finally { setTimeout(heatmapTick, HM_POLL_MS); }
 }
 
+// ── 탐사 회차 선택: /api/runs 로 과거 회차 목록 구성 (CSV 없으면 실시간만) ──
+async function loadRuns() {
+  try {
+    const r = await fetch("/api/runs", { cache: "no-store" });
+    if (!r.ok) return;
+    const { runs } = await r.json();
+    if (!runs.length) return;
+    $("hm-run").innerHTML =
+      '<option value="live">실시간</option><option value="all">전체 누적</option>' +
+      runs.map((x) => `<option value="${x.id}">${x.id}차 (${x.date})</option>`).join("");
+    $("hm-run").value = hmRun;
+  } catch { /* 서버 미지원·오프라인이면 실시간만 유지 */ }
+}
+loadRuns();
+
+$("hm-run").addEventListener("change", (e) => { hmRun = e.target.value; hmFetch().catch(() => {}); });
+$("hm-export").addEventListener("click", () => { location.href = `/api/export?run=${hmRun}`; });
 $("hm-sensor").addEventListener("change", (e) => { hmSensor = e.target.value; hmFetch().catch(() => {}); });
 $("hm-view").addEventListener("change", (e) => { hmView = e.target.value; hmFetch().catch(() => {}); });
 heatmapTick();
