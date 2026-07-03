@@ -52,7 +52,7 @@ pip install -r requirements.txt
 # 1. 누적 측정 데이터 생성 (시뮬레이션) → data/measurements.csv
 python generate_data.py
 
-# 2. 3D 히트맵 렌더링 → output/heatmap_3d.html, output/heatmap_3d.png
+# 2. 3D 히트맵 렌더링 → output/heatmap_3d.html, output/heatmap_3d_ph.png, output/heatmap_3d_ec.png
 python visualize_heatmap.py
 ```
 
@@ -82,7 +82,7 @@ python visualize_heatmap.py
 - 누적 측정값을 (X, Y, 수심) 격자 셀별 **평균**으로 집계 — 회차가 쌓일수록 셀당 표본이 늘어 정밀해짐
 - 색상은 단일 색상(파랑) 순차 램프: 밝음 = 깨끗함 → 어두움 = 오염도 높음
   (무지개 컬러맵은 색약자 구분·명도 순서 문제로 사용하지 않음)
-- 탁도가 높은 셀일수록 마커를 크게 그려 낮은 값 셀에 가려지지 않고 내부 핫스팟이 보이도록 함
+- 오염도가 높은 셀일수록 마커를 크게 그려 낮은 값 셀에 가려지지 않고 내부 핫스팟이 보이도록 함
 - 수심 축은 아래 방향이 깊어지도록 반전
 - 오염 판정 임계값(pH 6.5~8.5 / EC 500 µS/cm)은 `thresholds.py` 한 곳에서 관리 —
   임계값을 넘는 셀은 빨간 다이아몬드로 표시
